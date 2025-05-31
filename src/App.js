@@ -20,10 +20,9 @@ const firebaseConfig = {
 // This ensures consistency between your Firebase project's app ID and the Firestore data paths.
 const appId = firebaseConfig.appId;
 
-// initialAuthToken is a Canvas-specific global and is not used when Firebase config
-// is provided via environment variables for a standard React deployment.
-const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-
+// __initial_auth_token was a global variable specific to the Canvas environment.
+// It is no longer needed for a standard deployment on a 3rd party server,
+// as the app primarily relies on anonymous authentication.
 
 // Initialize Firebase App and Services outside the component to prevent re-initialization.
 // This ensures Firebase is initialized only once when the application loads.
@@ -88,13 +87,9 @@ function App() {
         // No user is signed in, attempt anonymous sign-in.
         console.log("No user signed in. Attempting anonymous sign-in for shared access.");
         try {
-          // Use signInWithCustomToken if provided, otherwise signInAnonymously.
-          // For this shared data model, anonymous sign-in is sufficient.
-          if (initialAuthToken) { // initialAuthToken is for Canvas environment primarily
-            await signInAnonymously(auth);
-          } else {
-            await signInAnonymously(auth);
-          }
+          // For a standard deployment, we directly sign in anonymously.
+          // The __initial_auth_token variable is not available here.
+          await signInAnonymously(auth);
         } catch (error) {
           console.error("Firebase anonymous sign-in failed:", error);
           // If anonymous sign-in fails, the app might not be able to interact with Firestore.
