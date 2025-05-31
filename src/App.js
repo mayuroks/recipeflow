@@ -3,9 +3,9 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, doc, addDoc, setDoc, deleteDoc, onSnapshot, collection, query, where, getDocs } from 'firebase/firestore';
 
-// Retrieve Firebase configuration from environment variables.
-// These variables should be set on your hosting platform (e.g., Render)
-// with the 'REACT_APP_' prefix for Create React App compatibility.
+// Firebase configuration.
+// For PRODUCTION deployment on Render, these MUST be loaded from environment variables
+// (e.env.REACT_APP_FB_API_KEY) for security and best practices.
 const firebaseConfig = {
   apiKey: process.env.REACT_APP_FB_API_KEY,
   authDomain: process.env.REACT_APP_FB_AUTH_DOMAIN,
@@ -17,15 +17,9 @@ const firebaseConfig = {
 };
 
 // Use the Firebase App ID from the configuration for Firestore paths.
-// This ensures consistency between your Firebase project's app ID and the Firestore data paths.
 const appId = firebaseConfig.appId;
 
-// __initial_auth_token was a global variable specific to the Canvas environment.
-// It is no longer needed for a standard deployment on a 3rd party server,
-// as the app primarily relies on anonymous authentication.
-
 // Initialize Firebase App and Services outside the component to prevent re-initialization.
-// This ensures Firebase is initialized only once when the application loads.
 let app;
 let db;
 let auth;
@@ -41,95 +35,104 @@ try {
 
 // Main App component
 function App() {
-  // State to track if Firebase authentication is ready.
-  // This is crucial to ensure Firestore operations are only attempted after authentication.
   const [isAuthReady, setIsAuthReady] = useState(false);
-
-  // State to hold the list of recipes fetched from Firestore.
   const [recipes, setRecipes] = useState([]);
-  // State to control the visibility of the "Add Recipe" modal.
   const [showAddModal, setShowAddModal] = useState(false);
-  // State to control the visibility of the "Video Player" modal.
   const [showVideoModal, setShowVideoModal] = useState(false);
-  // State to store the YouTube video ID for the currently playing video.
   const [currentVideoId, setCurrentVideoId] = useState('');
-  // State for displaying temporary toast messages to the user.
   const [toastMessage, setToastMessage] = useState('');
-  // State to control the visibility of the toast message.
   const [showToast, setShowToast] = useState(false);
-  // State for the search term entered by the user to filter recipes.
   const [searchTerm, setSearchTerm] = useState('');
-  // State to manage the current view: 'home' for recipes or 'groceryList' for the grocery list.
   const [currentView, setCurrentView] = useState('home');
 
-  // Predefined categories for recipes, used for tagging and display.
+  // Lifted state for Grocery List to App component for persistence across view changes
+  const [groceryText, setGroceryText] = useState('');
+  const [isGroceryListEditing, setIsGroceryListEditing] = useState(false);
+
   const categories = ['Breakfast', 'Lunch', 'Snacks', 'Dinner', 'Late-night'];
 
+  // --- Utility Function: Display Toast Message (MOVED UP FOR INITIALIZATION) ---
+  const showActionToast = useCallback((message) => {
+    setToastMessage(message);
+    setShowToast(true);
+    setTimeout(() => {
+      setShowToast(false);
+      setToastMessage('');
+    }, 3000);
+  }, []);
+
   // --- Firebase Authentication Setup ---
-  // This useEffect hook handles Firebase authentication.
-  // It attempts to sign in the user anonymously if no user is signed in.
-  // The `isAuthReady` state ensures that Firestore operations wait for authentication.
   useEffect(() => {
     if (!auth || !db) {
       console.error("Firebase not initialized. Cannot proceed with authentication or database operations.");
       return;
     }
 
-    // Log the appId being used for Firestore paths to help with rule debugging
     console.log("AppId being used for Firestore paths:", appId);
 
-    // `onAuthStateChanged` listens for changes in the user's sign-in state.
     const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
       if (user) {
-        // User is signed in (could be a new anonymous user or an existing one).
         console.log("Authenticated user:", user.uid);
       } else {
-        // No user is signed in, attempt anonymous sign-in.
         console.log("No user signed in. Attempting anonymous sign-in for shared access.");
         try {
-          // For a standard deployment, we directly sign in anonymously.
-          // The __initial_auth_token variable is not available here.
           await signInAnonymously(auth);
         } catch (error) {
           console.error("Firebase anonymous sign-in failed:", error);
-          // If anonymous sign-in fails, the app might not be able to interact with Firestore.
-          // In a real app, you might show a persistent error message to the user.
         }
       }
-      setIsAuthReady(true); // Authentication state is now determined.
+      setIsAuthReady(true);
     });
 
-    // Cleanup function: unsubscribe from the auth state listener when the component unmounts.
     return () => unsubscribeAuth();
-  }, []); // Empty dependency array ensures this runs only once on component mount.
+  }, []);
 
   // --- Firestore Data Loading for Recipes ---
-  // This useEffect hook sets up a real-time listener for recipes from Firestore.
-  // It depends on `isAuthReady` to ensure authentication is complete before fetching data.
   useEffect(() => {
-    if (!isAuthReady) return; // Wait for authentication to be ready.
+    if (!isAuthReady) return;
 
     console.log(`Attempting to subscribe to shared recipes.`);
-    // IMPORTANT: The Firestore path is now shared across all users.
-    // Data is stored in `artifacts/${appId}/recipes` instead of `artifacts/${appId}/users/${userId}/recipes`.
     const recipesCollectionRef = collection(db, `artifacts/${appId}/recipes`);
 
-    // `onSnapshot` provides real-time updates to the `recipes` state.
     const unsubscribeRecipes = onSnapshot(recipesCollectionRef, (snapshot) => {
       const fetchedRecipes = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setRecipes(fetchedRecipes);
       console.log("Shared recipes fetched from Firestore:", fetchedRecipes);
     }, (error) => {
       console.error("Error fetching shared recipes from Firestore:", error);
+      // This call now occurs after showActionToast is defined
       showActionToast('Failed to load recipes. Please check console for details.');
     });
 
-    // Cleanup function: unsubscribe from the Firestore listener when the component unmounts.
     return () => unsubscribeRecipes();
-  }, [isAuthReady]); // Re-run when `isAuthReady` changes.
+  }, [isAuthReady, showActionToast]); // showActionToast added as dependency
+
+  // --- Firestore Data Loading for Grocery List (now in App component) ---
+  useEffect(() => {
+    if (!isAuthReady) return;
+
+    console.log(`Attempting to subscribe to shared grocery list.`);
+    const groceryListDocRef = doc(db, `artifacts/${appId}/groceryList/myList`);
+
+    const unsubscribeGroceryList = onSnapshot(groceryListDocRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setGroceryText(docSnap.data().content || '');
+        console.log("Shared grocery list fetched from Firestore:", docSnap.data().content);
+      } else {
+        // If the document doesn't exist, ensure the local state is also clear
+        setGroceryText('');
+        console.log("No shared grocery list found.");
+      }
+    }, (error) => {
+      console.error("Error fetching shared grocery list from Firestore:", error);
+      // This call now occurs after showActionToast is defined
+      showActionToast('Failed to load grocery list. Please check console for details.');
+    });
+
+    return () => unsubscribeGroceryList();
+  }, [isAuthReady, showActionToast]); // showActionToast is a dependency
 
   // --- Utility Function: Extract YouTube Video ID ---
-  // Extracts the 11-character YouTube video ID from various YouTube URL formats (including Shorts).
   const getYoutubeVideoId = useCallback((url) => {
     let videoId = '';
     const youtubeRegex = /(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
@@ -147,36 +150,20 @@ function App() {
   }, []);
 
   // --- Utility Function: Generate YouTube Thumbnail URL ---
-  // Generates a high-quality YouTube thumbnail URL from a given video ID.
   const getYoutubeThumbnailUrl = useCallback((videoId) => {
     if (!videoId) return '';
     return `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
   }, []);
 
-  // --- Utility Function: Display Toast Message ---
-  // Shows a temporary toast notification at the bottom of the screen.
-  const showActionToast = useCallback((message) => {
-    setToastMessage(message);
-    setShowToast(true);
-    // Automatically hide the toast after 3 seconds.
-    setTimeout(() => {
-      setShowToast(false);
-      setToastMessage('');
-    }, 3000);
-  }, []);
-
   // --- Handler: Add New Recipe to Firestore ---
-  // Adds a new recipe document to the shared Firestore 'recipes' collection.
   const handleAddRecipe = useCallback(async (newRecipe) => {
     if (!isAuthReady) {
       showActionToast('Application is loading. Please wait for authentication.');
       return;
     }
     try {
-      // IMPORTANT: Using the shared Firestore path.
       const recipesCollectionRef = collection(db, `artifacts/${appId}/recipes`);
       await addDoc(recipesCollectionRef, newRecipe);
-      // Delay toast slightly to allow modal dismissal animation to start smoothly.
       requestAnimationFrame(() => {
         setTimeout(() => {
           showActionToast('Recipe Added!');
@@ -189,20 +176,16 @@ function App() {
   }, [isAuthReady, showActionToast]);
 
   // --- Handler: Delete Recipe from Firestore ---
-  // Deletes a recipe document from the shared Firestore 'recipes' collection.
   const handleDeleteRecipe = useCallback(async (videoIdToDelete) => {
     if (!isAuthReady) {
       showActionToast('Application is loading. Cannot delete.');
       return;
     }
     try {
-      // IMPORTANT: Using the shared Firestore path.
       const recipesCollectionRef = collection(db, `artifacts/${appId}/recipes`);
-      // Query to find the document by its `videoId` field.
       const q = query(recipesCollectionRef, where("videoId", "==", videoIdToDelete));
       const querySnapshot = await getDocs(q);
       if (!querySnapshot.empty) {
-        // If a matching document is found, delete it.
         const docToDelete = querySnapshot.docs[0];
         await deleteDoc(doc(db, `artifacts/${appId}/recipes`, docToDelete.id));
         showActionToast('Recipe Deleted!');
@@ -214,6 +197,23 @@ function App() {
       showActionToast('Failed to delete recipe. Please check console.');
     }
   }, [isAuthReady, showActionToast]);
+
+  // --- Handler: Save Grocery List to Firestore ---
+  const handleSaveGroceryList = async () => {
+    if (!isAuthReady) {
+      showActionToast('Application is loading. Cannot save.');
+      return;
+    }
+    try {
+      const groceryListDocRef = doc(db, `artifacts/${appId}/groceryList/myList`);
+      await setDoc(groceryListDocRef, { content: groceryText }, { merge: true });
+      setIsGroceryListEditing(false); // Exit editing mode after saving
+      showActionToast('Grocery List Saved!');
+    } catch (error) {
+      console.error('Failed to save grocery list to Firestore:', error);
+      showActionToast('Failed to save grocery list. Please check console.');
+    }
+  };
 
   // --- Handler: Open Video Player Modal ---
   const openVideoModal = useCallback((videoId) => {
@@ -228,7 +228,7 @@ function App() {
   }, []);
 
   // --- Component: Add Recipe Modal ---
-  const AddRecipeModal = ({ onAddRecipe, onClose, getYoutubeVideoId, getYoutubeThumbnailUrl }) => {
+  const AddRecipeModal = ({ onAddRecipe, onClose, getYoutubeVideoId, getYoutubeThumbnailUrl }) => { // Removed showActionToast prop
     const [youtubeUrl, setYoutubeUrl] = useState('');
     const [thumbnailUrl, setThumbnailUrl] = useState('');
     const [videoTitle, setVideoTitle] = useState('');
@@ -237,10 +237,9 @@ function App() {
     const [isLoadingThumbnail, setIsLoadingThumbnail] = useState(false);
     const [isFetchingTitle, setIsFetchingTitle] = useState(false);
 
-    // YouTube Data API Key - now accessed from environment variables.
+    // YouTube Data API Key - Loaded from environment variables for production.
     const YOUTUBE_API_KEY = process.env.REACT_APP_YOUTUBE_API_KEY;
 
-    // Function to reset all form fields to their initial empty state.
     const resetForm = useCallback(() => {
       setYoutubeUrl('');
       setThumbnailUrl('');
@@ -251,19 +250,14 @@ function App() {
       setIsFetchingTitle(false);
     }, []);
 
-    // Effect to reset form when the modal component unmounts (i.e., when it closes).
-    // This ensures the form is clean the next time it opens.
     useEffect(() => {
       return () => {
-        // Reset form 1 second after the modal component unmounts (visually disappears).
         setTimeout(() => {
           resetForm();
-        }, 1000); // 1 second delay
+        }, 1000);
       };
     }, [resetForm]);
 
-    // Effect to fetch YouTube video details (thumbnail and title) as the user types the URL.
-    // Includes a debounce to prevent excessive API calls.
     useEffect(() => {
         const handler = setTimeout(async () => {
             const videoId = getYoutubeVideoId(youtubeUrl);
@@ -272,8 +266,7 @@ function App() {
                 setIsValidUrl(true);
                 setIsLoadingThumbnail(false);
 
-                // Only attempt to fetch title if API key is available
-                if (YOUTUBE_API_KEY) {
+                if (YOUTUBE_API_KEY) { // Only fetch if API key is present
                     setIsFetchingTitle(true);
                     try {
                         const response = await fetch(
@@ -302,39 +295,39 @@ function App() {
                 setIsLoadingThumbnail(false);
                 setIsFetchingTitle(false);
             }
-        }, 500); // Debounce time: 500ms
+        }, 500);
         if (youtubeUrl) {
           setIsLoadingThumbnail(true);
           setIsFetchingTitle(true);
         }
-        setVideoTitle(''); // Clear title immediately when URL changes
+        setVideoTitle('');
         return () => {
-            clearTimeout(handler); // Clear timeout if URL changes before delay
+            clearTimeout(handler);
             setIsLoadingThumbnail(false);
             setIsFetchingTitle(false);
         };
     }, [youtubeUrl, getYoutubeVideoId, getYoutubeThumbnailUrl, YOUTUBE_API_KEY]);
 
-    // Handles the form submission for adding a new recipe.
     const handleTagChange = (tag) => {
       setSelectedTags((prevTags) =>
         prevTags.includes(tag) ? prevTags.filter((t) => t !== tag) : [...prevTags, tag]
       );
     };
 
+    // Removed handlePaste function
+
     const handleSubmit = async (e) => {
       e.preventDefault();
       const videoId = getYoutubeVideoId(youtubeUrl);
       if (isValidUrl && videoId) {
-        await onAddRecipe({ // Call parent's handler to add recipe to Firestore
+        await onAddRecipe({
           youtubeUrl,
           videoId,
           thumbnailUrl,
           title: videoTitle || 'Untitled Recipe',
           tags: selectedTags.length > 0 ? selectedTags : categories,
         });
-        // Form fields are reset by the useEffect cleanup when the modal closes.
-        onClose(); // Close the modal immediately after successful data handling.
+        onClose();
       }
     };
 
@@ -342,17 +335,18 @@ function App() {
       <div className="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center p-4 z-50 font-inter">
         <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md relative animate-fade-in-up">
           <button
-            onClick={onClose} // Simply call onClose; useEffect handles form reset on unmount.
+            onClick={onClose}
             className="absolute top-4 right-4 text-gray-500 hover:text-gray-800 text-2xl font-bold"
           >
             ×
           </button>
-          <h2 className="text-2xl font-bold text-gray-800 mb-6 text-center">Add New Recipe</h2>
+          <h2 className="text-2xl font-bold text-gray-800 mb-6 text-center">Add Recipe from YouTube</h2>
           <form onSubmit={handleSubmit}>
             <div className="mb-4">
               <label htmlFor="youtubeUrl" className="block text-gray-700 text-sm font-semibold mb-2">
-                YouTube Shorts URL:
+                Paste Youtube Shorts or Video URL:
               </label>
+              {/* Removed flex container and paste button */}
               <input
                 type="text"
                 id="youtubeUrl"
@@ -362,7 +356,6 @@ function App() {
                 placeholder="Paste YouTube URL here"
                 required
               />
-              {/* Conditional messages based on URL validity and loading state */}
               {!isValidUrl && youtubeUrl && !isLoadingThumbnail && !isFetchingTitle && (
                 <p className="text-red-500 text-xs mt-2">Please enter a valid YouTube URL.</p>
               )}
@@ -371,7 +364,6 @@ function App() {
               )}
             </div>
 
-            {/* Loading indicator for thumbnail/title fetch */}
             {isLoadingThumbnail && youtubeUrl && (
               <div className="mb-4 flex justify-center items-center h-32 bg-gray-100 rounded-lg animate-pulse">
                 <div className="relative w-16 h-16">
@@ -405,7 +397,6 @@ function App() {
               </div>
             )}
 
-            {/* Category selection checkboxes */}
             <div className="mb-6">
               <label className="block text-gray-700 text-sm font-semibold mb-2">
                 Select Categories:
@@ -426,7 +417,6 @@ function App() {
               </div>
             </div>
 
-            {/* Submit button for adding recipe */}
             <button
               type="submit"
               disabled={!isValidUrl || !youtubeUrl || isFetchingTitle}
@@ -445,12 +435,10 @@ function App() {
   };
 
   // --- Component: Video Player Modal ---
-  // Memoized to prevent unnecessary re-renders, improving performance.
   const VideoPlayerModal = memo(({ videoId, onClose, onAction, onDelete }) => {
-    // Handler for deleting the current video.
     const handleDeleteClick = () => {
-      onDelete(videoId); // Call parent's delete handler
-      onClose(); // Close the modal
+      onDelete(videoId);
+      onClose();
     };
 
     return (
@@ -465,7 +453,7 @@ function App() {
           <div className="aspect-w-16 aspect-h-9 mb-6 rounded-lg overflow-hidden shadow-lg">
             {videoId && (
               <iframe
-                key={videoId} // Key ensures iframe re-renders only when videoId changes, preventing reloads.
+                key={videoId}
                 className="w-full h-full"
                 src={`https://www.youtube.com/embed/${videoId}?autoplay=1&rel=0`}
                 title="YouTube video player"
@@ -531,81 +519,36 @@ function App() {
   };
 
   // --- Component: Grocery List ---
-  const GroceryList = () => {
-    const [groceryText, setGroceryText] = useState('');
-    const [isEditing, setIsEditing] = useState(false);
-
-    // Effect to load grocery list from Firestore (using a shared path).
-    useEffect(() => {
-      if (!isAuthReady) return; // Wait for authentication to be ready.
-
-      console.log(`Attempting to subscribe to shared grocery list.`);
-      // IMPORTANT: The Firestore path is now shared across all users.
-      // Data is stored in `artifacts/${appId}/groceryList/myList`.
-      const groceryListDocRef = doc(db, `artifacts/${appId}/groceryList/myList`);
-
-      // `onSnapshot` provides real-time updates to the `groceryText` state.
-      const unsubscribeGroceryList = onSnapshot(groceryListDocRef, (docSnap) => {
-        if (docSnap.exists()) {
-          setGroceryText(docSnap.data().content || '');
-          console.log("Shared grocery list fetched from Firestore:", docSnap.data().content);
-        } else {
-          setGroceryText(''); // If no document exists, the list is empty.
-          console.log("No shared grocery list found.");
-        }
-      }, (error) => {
-        console.error("Error fetching shared grocery list from Firestore:", error);
-        showActionToast('Failed to load grocery list. Please check console for details.');
-      });
-
-      // Cleanup function: unsubscribe from the Firestore listener when the component unmounts.
-      return () => unsubscribeGroceryList();
-    }, [isAuthReady]); // Re-run when `isAuthReady` changes.
-
-    // Handler to save the grocery list text to Firestore.
-    const handleSave = async () => {
-      if (!isAuthReady) {
-        showActionToast('Application is loading. Cannot save.');
-        return;
-      }
-      try {
-        // IMPORTANT: Using the shared Firestore path.
-        const groceryListDocRef = doc(db, `artifacts/${appId}/groceryList/myList`);
-        // `setDoc` with `merge: true` will create the document if it doesn't exist
-        // or update it without overwriting other fields if they exist.
-        await setDoc(groceryListDocRef, { content: groceryText }, { merge: true });
-        setIsEditing(false);
-        showActionToast('Grocery List Saved!');
-      } catch (error) {
-        console.error('Failed to save grocery list to Firestore:', error);
-        showActionToast('Failed to save grocery list. Please check console.');
-      }
-    };
-
+  // Now accepts groceryText and isEditing state from App component
+  const GroceryList = ({ groceryText, setGroceryText, isEditing, setIsEditing, handleSave }) => {
     return (
       <div className="container mx-auto py-8 px-4">
         <h2 className="text-3xl font-bold text-gray-800 mb-6 text-center">Your Grocery List</h2>
         <div className="bg-white rounded-xl shadow-lg p-6">
           <textarea
             className={`w-full h-96 p-4 text-gray-800 rounded-lg border-2 ${
-              isEditing ? 'border-blue-300' : 'border-gray-200' // No focus ring on edit
-            } resize-none transition-all duration-200`}
+              isEditing ? 'border-blue-300' : 'border-gray-200'
+            } resize-none transition-all duration-200 focus:outline-none ${ // Always remove default browser outline
+              isEditing ? 'focus:ring-2 focus:ring-blue-500 focus:border-transparent' : '' // Apply custom focus ring only when editing
+            }`}
             value={groceryText}
             onChange={(e) => setGroceryText(e.target.value)}
-            readOnly={!isEditing}
+            readOnly={!isEditing} // Textarea is read-only when not editing
             placeholder="Start typing your grocery list here..."
           />
           <div className="mt-6 flex justify-center space-x-4">
             {isEditing ? (
+              // Show Save button when in editing mode
               <button
-                onClick={handleSave}
+                onClick={handleSave} // Use the passed handleSave
                 className="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-8 rounded-full shadow-md transform transition-transform duration-200 hover:scale-105"
               >
                 Save Grocery List
               </button>
             ) : (
+              // Show Edit button when not in editing mode
               <button
-                onClick={() => setIsEditing(true)}
+                onClick={() => setIsEditing(true)} // Set to editing mode on click
                 className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-8 rounded-full shadow-md transform transition-transform duration-200 hover:scale-105"
               >
                 Edit Grocery List
@@ -617,7 +560,6 @@ function App() {
     );
   };
 
-  // Filtered recipes based on the search term entered by the user.
   const filteredRecipes = recipes.filter(recipe =>
     recipe.title.toLowerCase().includes(searchTerm.toLowerCase())
   );
@@ -628,9 +570,7 @@ function App() {
       <header className="bg-white shadow-sm p-4 sticky top-0 z-10">
         <div className="container mx-auto flex flex-col sm:flex-row justify-between items-center">
           <div className="flex items-center space-x-4 mb-4 sm:mb-0">
-            {/* App title, acts as a button to navigate to the home view */}
             <h1 className="text-3xl font-extrabold text-blue-700 cursor-pointer" onClick={() => setCurrentView('home')}>RecipeFlow</h1>
-            {/* Button to navigate to the Grocery List view */}
             <button
               onClick={() => setCurrentView('groceryList')}
               className={`py-2 px-4 rounded-lg font-semibold transition-colors duration-200 ${
@@ -640,7 +580,6 @@ function App() {
               Grocery List
             </button>
           </div>
-          {/* Search bar, only visible on the home view */}
           {currentView === 'home' && (
             <input
               type="text"
@@ -655,14 +594,28 @@ function App() {
 
       {/* Main Content Area - Conditional Rendering based on `currentView` */}
       <main>
-        {/* Loading message displayed until Firebase authentication is ready */}
+        {/* Loading indicator while authentication is not ready */}
         {!isAuthReady && (
-          <div className="text-center py-10 text-gray-600">
-            Loading application... Please wait for authentication.
+          <div className="flex flex-col items-center justify-center py-10">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mb-4"></div>
+            <p className="text-gray-600 text-lg">Loading application...</p>
           </div>
         )}
         {isAuthReady && currentView === 'home' && (
           <div className="container mx-auto py-8 px-4">
+            {/* New Dietary Advice Section */}
+            <section className="mb-10 p-6 bg-white rounded-xl shadow-lg text-center">
+              <h2 className="text-2xl font-bold text-gray-800 mb-3">Your Healthy Plate & Daily Habits</h2>
+              <p className="text-gray-700 text-lg leading-relaxed">
+                Aim for a balanced plate with <span className="font-semibold text-green-600">Fibre</span>,
+                <span className="font-semibold text-blue-600"> Protein</span>,
+                <span className="font-semibold text-yellow-600"> Complex Carbs</span>, and
+                <span className="font-semibold text-purple-600"> Healthy Fats</span>.
+                Include 4-5 servings of nuts and fruits. Drink 8 glasses of water daily.
+                Limit highly processed foods, sugary drinks, and deep-fried items.
+              </p>
+            </section>
+
             {/* Iterate through categories and display recipes */}
             {categories.map((category) => (
               <section key={category} className="mb-10">
@@ -700,7 +653,15 @@ function App() {
           </div>
         )}
 
-        {isAuthReady && currentView === 'groceryList' && <GroceryList />}
+        {isAuthReady && currentView === 'groceryList' && (
+          <GroceryList
+            groceryText={groceryText}
+            setGroceryText={setGroceryText}
+            isEditing={isGroceryListEditing}
+            setIsEditing={setIsGroceryListEditing}
+            handleSave={handleSaveGroceryList}
+          />
+        )}
       </main>
 
       {/* Floating "Add Recipe" Button (only visible on the home view) */}
@@ -722,6 +683,7 @@ function App() {
           onClose={() => setShowAddModal(false)}
           getYoutubeVideoId={getYoutubeVideoId}
           getYoutubeThumbnailUrl={getYoutubeThumbnailUrl}
+          // Removed showActionToast prop as it's no longer needed in AddRecipeModal
         />
       )}
       {showVideoModal && (
